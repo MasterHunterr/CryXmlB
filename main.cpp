@@ -1,7 +1,11 @@
 /*
+
+fix by Mphammed Hussin (MasterHunterr)
+https://github.com/MasterHunterr/CryXmlB
+Copyright (c) 2020 Bl00drav3n &&  Mphammed Hussin (MasterHunterr)
 MIT License
 
-Copyright (c) 2020 Bl00drav3n
+
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +34,6 @@ SOFTWARE.
 #include <string.h>
 
 #include "tinyxml2.h"
-#include "tinyxml2.cpp"
 
 struct cry_xml_node_t {
 	int32_t name_offset;
@@ -71,6 +74,7 @@ read_file_result_t read_file(const char *filename) {
 		}
 		else {
 			fprintf(stderr, "Error reading file %s\n", filename);
+			free(data); // Free allocated memory on error
 		}
 		fclose(f);
 	}
@@ -119,7 +123,7 @@ char* read_string(binary_stream_t* stream, uint64_t size) {
 	char *result = 0;
 	assert(stream->ptr + size <= stream->size);
 	if (stream->ptr + size <= stream->size) {
-		result = (char*)stream->data;
+		result = (char*)(stream->data + stream->ptr);
 		stream->ptr += size;
 	}
 	else {
@@ -180,7 +184,7 @@ void convert_file(const char *filename) {
 
 	const char *ext_str = "bak";
 	read_file_result_t xml_file = read_file(filename);
-	
+
 	binary_stream_t* stream = &the_stream;
 	stream->data = xml_file.data;
 	stream->size = xml_file.size;
@@ -189,19 +193,29 @@ void convert_file(const char *filename) {
 		unsigned char peek = peek_byte(stream);
 		if (peek == '<') {
 			fprintf(stdout, "File %s is already XML\n", filename);
+			free(xml_file.data);
 			return;
 		}
 		else if (peek != 'C') {
 			fprintf(stderr, "File %s has unknown file format\n", filename);
+			free(xml_file.data);
 			return;
 		}
 
-		char* backup_name = (char*)malloc(strlen(filename) + strlen(ext_str));
+		char* backup_name = (char*)malloc(strlen(filename) + strlen(ext_str) + 2); // +2 for the dot and null terminator
+		if (!backup_name) {
+			fprintf(stderr, "Memory allocation failed\n");
+			free(xml_file.data);
+			return;
+		}
 		sprintf(backup_name, "%s.%s", filename, ext_str);
 		if (!write_file(backup_name, xml_file.data, xml_file.size)) {
 			fprintf(stderr, "Aborting.\n");
+			free(backup_name);
+			free(xml_file.data);
 			exit(1);
 		}
+		free(backup_name);
 
 		char * header = read_cstring(stream);
 		if (header) {
@@ -221,6 +235,11 @@ void convert_file(const char *filename) {
 				uint32_t data_table_size = read_int32(stream);
 
 				cry_xml_node_t *node_table = (cry_xml_node_t*)calloc(node_table_count, sizeof(*node_table));
+				if (!node_table) {
+					fprintf(stderr, "Memory allocation failed\n");
+					free(xml_file.data);
+					return;
+				}
 				seek(stream, node_table_offset);
 				for (uint32_t i = 0; i < node_table_count; i++) {
 					cry_xml_node_t *node = node_table + i;
@@ -235,6 +254,12 @@ void convert_file(const char *filename) {
 				}
 
 				cry_xml_ref_t* attr_table = (cry_xml_ref_t*)calloc(attr_table_count, sizeof(*attr_table));
+				if (!attr_table) {
+					fprintf(stderr, "Memory allocation failed\n");
+					free(node_table);
+					free(xml_file.data);
+					return;
+				}
 				seek(stream, attr_table_offset);
 				for (uint32_t i = 0; i < attr_table_count; i++) {
 					attr_table[i].name_offset = read_int32(stream);
@@ -242,13 +267,28 @@ void convert_file(const char *filename) {
 				}
 
 				uint32_t* child_table = (uint32_t*)calloc(child_table_count, sizeof(*child_table));
+				if (!child_table) {
+					fprintf(stderr, "Memory allocation failed\n");
+					free(attr_table);
+					free(node_table);
+					free(xml_file.data);
+					return;
+				}
 				seek(stream, child_table_offset);
 				for (uint32_t i = 0; i < child_table_count; i++) {
 					child_table[i] = read_int32(stream);
 				}
-				
+
 				tinyxml2::XMLDocument doc;
 				tinyxml2::XMLElement **xml_nodes = (tinyxml2::XMLElement**)malloc(node_table_count * sizeof(*xml_nodes));
+				if (!xml_nodes) {
+					fprintf(stderr, "Memory allocation failed\n");
+					free(child_table);
+					free(attr_table);
+					free(node_table);
+					free(xml_file.data);
+					return;
+				}
 				uint64_t attr_idx = 0;
 				char *data_table = (char*)stream->data + data_table_offset;
 				for (uint32_t i = 0; i < node_table_count; i++) {
@@ -271,8 +311,14 @@ void convert_file(const char *filename) {
 					}
 				}
 
-				// TODO: switch to non-compact and fix formatting
-				doc.SaveFile(filename, true);
+				// Switch to non-compact formatting with proper indentation
+				doc.SaveFile(filename, false);
+
+				// Free all allocated memory
+				free(xml_nodes);
+				free(child_table);
+				free(attr_table);
+				free(node_table);
 			}
 			else {
 				fprintf(stderr, "Invalid header in file %s\n", filename);
@@ -281,6 +327,9 @@ void convert_file(const char *filename) {
 		else {
 			fprintf(stderr, "Error reading header of file %s\n", filename);
 		}
+
+		// Free the file data
+		free(xml_file.data);
 	}
 }
 
